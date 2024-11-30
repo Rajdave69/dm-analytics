@@ -32,21 +32,19 @@ def process_instagram_data(instagram_file):
     """
     Process Instagram JSON files and extract relevant data.
     """
-    instagram_data = []
-
-
     data = json.load(instagram_file).get('messages', [])
-    instagram_data.extend(
+
+    instagram_data = tuple([
         (
-            message.get('sender_name'),
-            int(message['timestamp_ms'] / 1000),
+            message['sender_name'],
+            message['timestamp_ms'],
             message['content']
         )
         for message in data
-        if message.get('content') and not str(message.get('content')).endswith(
+        if (content := message.get('content')) and not str(content).endswith(
             "wasn't notified about this message because they're in quiet mode."
         )
-    )
+    ])
 
     return instagram_data
 
@@ -64,7 +62,7 @@ def process_discord_data(discord_file):
     for row in csv_reader:
         try:
             author = row[1]
-            timestamp = parse_discord_timestamp(row[2])
+            timestamp = row[2] # parse_discord_timestamp(row[2])
             content = row[3]
             discord_data.append((author, timestamp, content))
         except (IndexError, ValueError) as e:
@@ -156,24 +154,38 @@ def upload_files():
     )
 
     # Insert discord data
-    data_to_insert = [
-        ('discord', '1' if users['user1']['discord'] == author else '2', author, timestamp, content)
+    discord_data_to_insert = [
+        ('1' if users['user1']['discord'] == author else '2', author, timestamp, content)
         for author, timestamp, content in discord_data
     ]
 
-    data_to_insert.extend([
-        ('instagram', '1' if users['user1']['instagram'] == author else '2', author, timestamp, content)
+    instagram_data_to_insert = [
+        ('1' if users['user1']['instagram'] == author else '2', author, timestamp, content)
         for author, timestamp, content in instagram_data
-    ])
+    ]
 
     start = time.time()
 
     cur.executemany(
         f"""
         INSERT INTO `{user_id}` (platform, user, platform_username, timestamp, message_content)
-        VALUES (?, ?, ?, FROM_UNIXTIME(?), ?)
+        VALUES 
+        ('discord', ?, ?, 
+        STR_TO_DATE(
+            LEFT(?, 26),  -- Trim extra fractional digits
+            '%Y-%m-%dT%H:%i:%s.%f'
+        ), 
+        ?)
         """,
-        data_to_insert
+        discord_data_to_insert
+    )
+
+    cur.executemany(
+        f"""
+            INSERT INTO `{user_id}` (platform, user, platform_username, timestamp, message_content)
+            VALUES ('instagram', ?, ?, FROM_UNIXTIME(LEFT(? / 1000, 10)), ?)
+            """,
+        instagram_data_to_insert
     )
     print(time.time() - start)
 
