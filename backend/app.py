@@ -37,7 +37,7 @@ def process_instagram_data(instagram_file):
     instagram_data = tuple([
         (
             message['sender_name'],
-            message['timestamp_ms'],
+            int(message['timestamp_ms'] / 1000),
             message['content']
         )
         for message in data
@@ -62,7 +62,7 @@ def process_discord_data(discord_file):
     for row in csv_reader:
         try:
             author = row[1]
-            timestamp = row[2] # parse_discord_timestamp(row[2])
+            timestamp = parse_discord_timestamp(row[2])
             content = row[3]
             discord_data.append((author, timestamp, content))
         except (IndexError, ValueError) as e:
@@ -97,14 +97,12 @@ def upload_files():
                 return jsonify({"message": f"No {user}_{platform} found in the request"}), 400
             users[user][platform] = form_data
 
-
     # Initialize data storage
     discord_data = []
     instagram_data = []
 
     # Process all files in `request.files`
     for key, file in request.files.items():
-        print(f"Processing Key: {key}, File: {file.filename}")
 
         # Handle Instagram JSON files
         if key.startswith('instagram_file_'):
@@ -116,7 +114,6 @@ def upload_files():
                 instagram_data.extend(process_instagram_data(file))
             except Exception as e:
                 return jsonify({"message": f"Error processing Instagram file {file.filename}: {str(e)}"}), 400
-
 
         # Handle Discord CSV file
         elif key == 'discord_file':
@@ -131,7 +128,7 @@ def upload_files():
 
         # Handle unknown files
         else:
-            print(f"Unknown key: {key}")
+            return jsonify({"message": f"Unknown key passed {key}"}), 400
 
     # Add data to the database
     con = mysql.connector.connect(**MYSQL_CREDS)
@@ -153,41 +150,24 @@ def upload_files():
         """
     )
 
-    # Insert discord data
-    discord_data_to_insert = [
-        ('1' if users['user1']['discord'] == author else '2', author, timestamp, content)
+    # Structure the data
+    data_to_insert = [
+        ('discord', '1' if users['user1']['discord'] == author else '2', author, timestamp, content)
         for author, timestamp, content in discord_data
     ]
 
-    instagram_data_to_insert = [
-        ('1' if users['user1']['instagram'] == author else '2', author, timestamp, content)
+    data_to_insert.extend([
+        ('instagram', '1' if users['user1']['instagram'] == author else '2', author, timestamp, content)
         for author, timestamp, content in instagram_data
-    ]
-
-    start = time.time()
+    ])
 
     cur.executemany(
         f"""
         INSERT INTO `{user_id}` (platform, user, platform_username, timestamp, message_content)
-        VALUES 
-        ('discord', ?, ?, 
-        STR_TO_DATE(
-            LEFT(?, 26),  -- Trim extra fractional digits
-            '%Y-%m-%dT%H:%i:%s.%f'
-        ), 
-        ?)
+        VALUES (?, ?, ?, FROM_UNIXTIME(?), ?)
         """,
-        discord_data_to_insert
+        tuple(data_to_insert)
     )
-
-    cur.executemany(
-        f"""
-            INSERT INTO `{user_id}` (platform, user, platform_username, timestamp, message_content)
-            VALUES ('instagram', ?, ?, FROM_UNIXTIME(LEFT(? / 1000, 10)), ?)
-            """,
-        instagram_data_to_insert
-    )
-    print(time.time() - start)
 
     con.commit()
     cur.close()
